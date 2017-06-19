@@ -26,32 +26,45 @@ var _getDevice = function() {
   });
 };
 
+var _getHardwarePorts = function() {
+  return new Promise(function(resolve, reject) {
+    _getDevice()
+      .then(function(devices) {
+        // 获取service列表
+        run('networksetup -listallhardwareports')
+          .then(function(output) {
+            var hardwarePorts = [];
+            for (var i = 0; i < devices.length; i++) {
+              var md, re = new RegExp("Hardware Port: (.+?)\\nDevice: " + devices[i], 'm');
+              if (md = re.exec(output)) {
+                hardwarePorts.push(md[1]);
+              }
+            }
+            hardwarePorts.length ? resolve(hardwarePorts) : reject();
+          })
+          .catch(reject);
+      }).catch(reject);
+  });
+}
+
 var _getCommands = function() {
   return new Promise(function(resolve, reject) {
     if (process.platform !== 'win32') {
-      _getDevice()
-        .then(function(devices) {
-          // 获取service列表
-          run('networksetup -listallhardwareports')
-            .then(function(output) {
-              var cmds = [];
-              var setups = [
-                'sudo networksetup -setwebproxy "_service" _host _port',
-                'sudo networksetup -setsecurewebproxy "_service" _host _port',
-                'sudo networksetup -setwebproxystate "_service" on',
-                'sudo networksetup -setsecurewebproxystate "_service" on'
-              ];
-              for (var i = 0; i < devices.length; i++) {
-                var md, re = new RegExp("Hardware Port: (.+?)\\nDevice: " + devices[i], 'm');
-                if (md = re.exec(output)) {
-                  setups.map(function(item) {
-                    cmds.push(item.replace('_service', md[1]));
-                  });
-                }
-              }
-              cmds.length ? resolve(cmds) : reject();
-            })
-            .catch(reject);
+      _getHardwarePorts()
+        .then(function(hardwarePorts) {
+          var cmds = [];
+          var setups = [
+            'sudo networksetup -setwebproxy "_service" _host _port',
+            'sudo networksetup -setsecurewebproxy "_service" _host _port',
+            'sudo networksetup -setwebproxystate "_service" on',
+            'sudo networksetup -setsecurewebproxystate "_service" on'
+          ];
+          for (var i = 0; i < hardwarePorts.length; i++) {
+            setups.map(function(item) {
+              cmds.push(item.replace('_service', hardwarePorts[i]));
+            });
+          }
+          cmds.length ? resolve(cmds) : reject();
         }).catch(reject);
     } else {
       resolve([
@@ -78,17 +91,36 @@ exports.setProxyOn = function(host, port) {
 }
 
 exports.setProxyOff = function() {
-  var cmds = [];
-  if (process.platform !== 'win32') {
-    cmds.push('sudo networksetup -setwebproxystate WI-FI off');
-    cmds.push('sudo networksetup -setsecurewebproxystate WI-FI off');
-  } else {
-    cmds.push('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /f');
-    cmds.push('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /f');
-    cmds.push('netsh winhttp reset proxy');
-  }
-
-  return Promise.reduce(cmds, function(_, cmd) {
-    return run(cmd);
-  }, null);
+  return new Promise(function(resolve, reject) {
+    if (process.platform !== 'win32') {
+      var setups = [
+        'sudo networksetup -setwebproxystate "_service" off',
+        'sudo networksetup -setsecurewebproxystate "_service" off'
+      ];
+      _getHardwarePorts()
+        .then(function(hardwarePorts) {
+          var cmds = [];
+          for (var i = 0; i < hardwarePorts.length; i++) {
+            setups.map(function(item) {
+              cmds.push(item.replace('_service', hardwarePorts[i]));
+            });
+          }
+          if (cmds.length) {
+            resolve(Promise.reduce(cmds, function(_, cmd) {
+              return run(cmd);
+            }, null));
+          } else {
+            reject();
+          }
+        });
+    } else {
+      var cmds = [];
+      cmds.push('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /f');
+      cmds.push('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /f');
+      cmds.push('netsh winhttp reset proxy');
+      resolve(Promise.reduce(cmds, function(_, cmd) {
+        return run(cmd);
+      }, null));
+    }
+  });
 }
